@@ -12,6 +12,12 @@ class TestDiagNrLogParser(unittest.TestCase):
     parser = DiagNrLogParser(parent=None)
     log_header = namedtuple('QcDiagLogHeader', 'cmd_code reserved length1 length2 log_id timestamp')
 
+    def setUp(self):
+        # Several handlers are stateful (e.g. nr_last_c_rnti is remembered
+        # across packets, nr_scell_* from 0xB823): each test must start from a
+        # clean parser so assertions do not depend on the test execution order.
+        self.parser = DiagNrLogParser(parent=None)
+
     # ML1
 
     def test_parse_nr_ml1_meas_db_update(self):
@@ -325,21 +331,28 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
     # MAC
 
     def test_parse_nr_mac_rach_attempt_v5(self):
-        # v0x05 (118 B, SDXLEMUR), successful contention-based attempt with Msg3/Msg4
+        # v0x05 (118 B, SDXLEMUR), successful contention-based attempt with Msg3/Msg4.
+        # The @38/@40/@42/@46/@60 words are NOT vendor-grounded (constant across live
+        # attempts with different timing; "Msg4" would precede Msg3), so they are
+        # printed as raw unverified words.
         payload = binascii.unhexlify('050003000000000105000000ff0000010f030100000000009927010100066500030015001b001b000b0136009a0300019b03000100000000000000009a0b01010000c5b9000001010000000000000000000000009a170101c02062040000000108180000f4e80000000000009b0300019a170101a027')
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
                                      log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT), timestamp=0)
         result = self.parser.parse_nr_mac_rach_attempt(pkt_header, payload, dict())
-        expected_stdout = ('NR MAC RACH Attempt v0x05: preamble=21, RA-RNTI=27, Msg1 SFN=921 slot=9, '
-                           'RAR window 267/0 - 54/0, Msg2 SFN=922 slot=0 TC-RNTI=0x0100, Msg3 SFN=923 slot=0 C-RNTI=0x179a, '
-                           'Msg4 SFN=922 slot=2, post-RACH RNTI=0x179a\nNR MAC Msg3 C-RNTI CE: 0x179a')
+        expected_stdout = ('NR MAC RACH Attempt v0x05: preamble=21, Msg1 SFN=921 slot=9, '
+                           'unverified: w38=0x001b w40=0x010b w42=0x0036 w46=0x0100 w60=0x0b9a, '
+                           'Msg2 SFN=922 slot=0, Msg3 SFN=923 slot=0 C-RNTI=0x179a, '
+                           'post-RACH RNTI=0x179a\nNR MAC Msg3 C-RNTI CE: 0x179a')
         self.assertEqual(result['stdout'], expected_stdout)
         self.assertEqual(result['layer'], 'mac')
         self.assertEqual(len(result['cp']), 1)
         # GSMTAPv3 NR_MAC (0x0500) + mac-nr-framed UL C-RNTI packet; payload is the Msg3
         # MAC PDU as a C-RNTI CE: UL-SCH subheader E=0 LCID=58 (0x3a) + 2-byte C-RNTI.
         # (v0x05 carries no UL-CCCH SDU; that comes from 0xB821 with -L rrc.)
-        expected_pkt = binascii.unhexlify('03000009050000000000000c0000000012d53d80000000000002000400000000fffe01000302179a03000007039b0000013a179a')
+        # Note the two zero padding bytes after END_OF_METADATA (0xfffe): newer SCAT
+        # pads the metadata area to the 32-bit boundary announced by hdr_len (9 words
+        # = 36 bytes), so the MAC context starts exactly at 4 * hdr_len.
+        expected_pkt = binascii.unhexlify('03000009050000000000000c0000000012d53d80000000000002000400000000fffe000001000302179a03000007039b0000013a179a')
         self.assertEqual(result['cp'][0], expected_pkt)
         self.assertEqual(result['ts'], datetime.datetime(1980, 1, 6, 0, 0, tzinfo=datetime.timezone.utc))
 
@@ -349,9 +362,42 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
                                      log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT), timestamp=0)
         result = self.parser.parse_nr_mac_rach_attempt(pkt_header, payload, dict())
-        expected = {'stdout': 'NR MAC RACH Attempt v0x05: preamble=3, RA-RNTI=27, Msg1 SFN=478 slot=9, RAR window 267/0 - 57/0, Msg2 SFN=479 slot=0 TC-RNTI=0x0100, Msg3 SFN=480 slot=0',
+        expected = {'stdout': ('NR MAC RACH Attempt v0x05: preamble=3, Msg1 SFN=478 slot=9, '
+                               'unverified: w38=0x001b w40=0x010b w42=0x0039 w46=0x0100 w60=0x0000, '
+                               'Msg2 SFN=479 slot=0, Msg3 SFN=480 slot=0'),
                     'ts': datetime.datetime(1980, 1, 6, 0, 0, tzinfo=datetime.timezone.utc)}
         self.assertDictEqual(result, expected) # type: ignore
+
+    def test_parse_nr_mac_rach_attempt_v7_ccch(self):
+        # v0x07 (108 B, layout per diaggrok diag_0xb88a.py): semi-synthetic vector
+        # (constructed per the published field offsets, not a modem capture) with a
+        # 48-bit UL-CCCH SDU. Msg3 PUSCH is TC-RNTI scheduled (38.321 5.15), so the
+        # emitted MAC-NR context carries the TC-RNTI value.
+        payload = binascii.unhexlify('07000000000000000000000000000000010000000000010100000000242600000000002a0000000000000f00250e0000260e000000000000250200000000b2a10c0000002b02000038000000000000001c2a3c0e10f100000000000000000000000000000000000000000000')
+        pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
+                                     log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT), timestamp=0)
+        result = self.parser.parse_nr_mac_rach_attempt(pkt_header, payload, dict())
+        expected_stdout = ('NR MAC RACH Attempt v0x07: preamble=42, RA-RNTI=15 Msg1 SFN=548 slot=9, '
+                           'RAR window 549/3 - 550/3, Msg2 SFN=549 slot=0 TC-RNTI=0xa1b2 TA=12, '
+                           'Msg3 SFN=555 slot=0, msg_bitmask=0x01\nNR MAC Msg3 UL-CCCH SDU: 1c2a3c0e10f1')
+        self.assertEqual(result['stdout'], expected_stdout)
+        self.assertEqual(result['layer'], 'mac')
+        self.assertEqual(len(result['cp']), 1)
+        # MAC-NR UL: LCID 52 (0x34, "CCCH (48 bits)") wrapping the 6-byte UL-CCCH SDU,
+        # RNTI tag = TC-RNTI 0xa1b2
+        expected_pkt = binascii.unhexlify('03000009050000000000000c0000000012d53d80000000000002000400000000fffe000001000302a1b203000007022b000001341c2a3c0e10f1')
+        self.assertEqual(result['cp'][0], expected_pkt)
+
+    def test_rach_trigger_clears_stale_rnti(self):
+        # A new RACH procedure invalidates the remembered C-RNTI (RNTIs get
+        # reassigned on reconnect); S-PHR re-emission must not attribute
+        # packets to a stale RNTI.
+        payload = binascii.unhexlify('01 00 03 00 00 00 00 00 05 00 00 00'.replace(' ', ''))
+        pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
+                                     log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_RACH_TRIGGER), timestamp=0)
+        self.parser.nr_last_c_rnti = 0x179a
+        self.parser.parse_nr_mac_rach_trigger(pkt_header, payload, dict())
+        self.assertEqual(self.parser.nr_last_c_rnti, 0)
 
     def test_parse_nr_mac_rach_attempt_unknown_version(self):
         payload = binascii.unhexlify('ff00aa55')
@@ -373,21 +419,48 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
         self.assertDictEqual(result, expected) # type: ignore
 
     def test_parse_nr_l2_ul_tb_s_phr(self):
-        # v0x00030004 with an S-BSR + S-PHR MAC CE pair ("3d 00 39 35 35") in the TB area
-        # (live capture, SDXLEMUR): S-PHR subheader 0x39, PH raw 0x35=53, Pcmax byte 0x35
+        # v0x00030004 with a Short-Truncated-BSR-style subheader + S-PHR MAC CE pair
+        # ("3d 00 39 35 35") in the TB area (live capture, SDXLEMUR): S-PHR subheader
+        # 0x39 (LCID 57), PH raw 0x35=53, Pcmax,f,c byte 0x35 (6-bit index 53).
         payload = binascii.unhexlify('0400030002000000130 0c901 0100 0000 0100 0200 d0030000 54000000 0303 0583 00c8 0000 0500 0000 3d00 3935 3503 00ca 0101 0000 0009 0000 001c 0000 0002 0000 0002 0240 8200 6000 0002 00'.replace(' ', ''))
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
                                      log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_L2_UL_TB), timestamp=0)
         result = self.parser.parse_nr_l2_ul_tb(pkt_header, payload, dict())
-        # PH raw 53 -> per 38.133 Table 10.1.17.1-1: 20 dB <= PH < 21 dB
-        self.assertIn('S-PHR CE @42: PH raw=53 (20 dB <= PH < 21 dB), Pcmax,c raw=21 (0x35), P=1', result['stdout'])
+        # PH raw 53 -> per 38.133 Table 10.1.17.1-1: 20 dB <= PH < 21 dB.
+        # Pcmax,f,c index 53 -> per 38.133 Table 10.1.18.1-1: 23 dBm <= Pcmax < 24 dBm
+        # (matches the same network's 0xB881 max-power 23 dBm; there is no P bit in
+        # the NR Single Entry PHR).
+        self.assertIn('S-PHR CE @42: PH raw=53 (20 dB <= PH < 21 dB), Pcmax,f,c raw=53 (23 dBm <= Pcmax < 24 dBm), strong',
+                      result['stdout'])
+        # No C-RNTI is known yet on a fresh parser: the strong pattern is validated,
+        # but NO_RNTI UL-SCH packets are mis-dissected by Wireshark as BCCH/BCH, so
+        # no pcap packet is emitted until a C-RNTI is known.
+        self.assertNotIn('cp', result)
+
+        # Same packet after a RACH attempt revealed the C-RNTI: S-PHR CE is
+        # re-emitted as a MAC-NR UL-SCH packet with the C-RNTI context.
+        self.parser.nr_last_c_rnti = 0x179a
+        result = self.parser.parse_nr_l2_ul_tb(pkt_header, payload, dict())
         self.assertEqual(result['layer'], 'mac')
         self.assertEqual(len(result['cp']), 1)
-        # MAC-NR UL-SCH packet carrying the raw CE bytes (0x39 subheader + 2 CE bytes);
-        # no RNTI tag because no C-RNTI is known yet (rntiType NO_RNTI)
         pkt = result['cp'][0]
-        self.assertTrue(pkt.endswith(bytes.fromhex('0139353 5'.replace(' ', ''))))
-        self.assertNotIn(bytes([0x02, 0x00, 0x00]), pkt)  # no MAC_NR_RNTI_TAG with rnti 0
+        # MAC-NR UL-SCH packet carrying the raw CE bytes (0x39 subheader + 2 CE bytes)
+        self.assertTrue(pkt.endswith(bytes.fromhex('01393535')))
+        # RNTI tag 0x02 + C-RNTI 0x179a, and the UEID tag follows
+        self.assertIn(bytes.fromhex('02179a03'), pkt)
+
+    def test_parse_nr_l2_ul_tb_phr_weak_no_pcap(self):
+        # A lone 0x39 behind a 0x00 byte inside SDU/padding matches the weak
+        # S-PHR pattern. It is reported on stdout but must NOT be re-emitted as
+        # a pcap MAC-NR packet (live captures showed false positives such as
+        # "39 00 00" inside zero-filled TB areas).
+        payload = binascii.unhexlify('04000300010000000b00 e701010000 00011000002e0000000700 00000000000080002800000700000034 0039 3500'.replace(' ', ''))
+        pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
+                                     log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_L2_UL_TB), timestamp=0)
+        self.parser.nr_last_c_rnti = 0x179a
+        result = self.parser.parse_nr_l2_ul_tb(pkt_header, payload, dict())
+        self.assertIn('weak', result['stdout'])
+        self.assertNotIn('cp', result)
 
     def test_parse_nr_l2_ul_tb_no_phr(self):
         # no 0x39 CE in this packet -> stdout only, no cp
@@ -399,8 +472,11 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
         self.assertNotIn('cp', result)
 
     def test_parse_nr_mac_ul_tb_stats(self):
-        # 0xB881 v0x00030001, one 80-byte record (live capture, SDXLEMUR):
-        # phr @44 = 0x54df = 21727 (milli-dB -> 21.727 dB), max-power @52 = 23 dBm
+        # 0xB881 v0x00030001, one 80-byte record (live capture, SDXLEMUR).
+        # Labels per CellNinjia NR5G_MAC_UL_TB_Stats.asn1: phr @32 in milli-dB
+        # (21727 -> 21.727 dB), max-power @40 in dBm (23), @68 num-ulsch-sched
+        # (935 = the record's num-new-tx 935, cross-checked), @72
+        # num-no-ulsch-sched, u16 pcmax @76 and u16 flush-gap-cnt @78.
         payload = binascii.unhexlify('01000300000000010000000067260a00000000000000000000000000752e0000000000003548000000000000df5400000000000017000000a7030000000000009d2d0000b45d020089010000feffffffa70300000000000004010000')
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
                                      log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_UL_TB_STATS), timestamp=0)
@@ -409,17 +485,25 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
         self.assertIn('PHR=21.727 dB (raw 21727)', result['stdout'])
         self.assertIn('max_power(Pcmax)=23 dBm', result['stdout'])
         self.assertIn('num_prb=18485', result['stdout'])
+        self.assertIn('num_new_tx=935', result['stdout'])
+        self.assertIn('num_ulsch_sched=935', result['stdout'])
+        self.assertIn('num_no_ulsch_sched=0', result['stdout'])
+        self.assertIn('unk_rec64=4294967294', result['stdout'])
+        self.assertIn('pcmax=260', result['stdout'])
+        self.assertIn('flush_gap=0', result['stdout'])
         self.assertNotIn('cp', result)  # stats are stdout-only, no pcap emission
 
     def test_parse_nr_mac_dci_info_ul_tpc(self):
         # 0xB885 v0x00030006, one record, one UL DCI (live capture):
-        # DCI_UL bitfield bytes 29 03 00 -> pusch-tpc=(0x29>>3)&3=1 (0 dB), harq=2, mcs=0
+        # DCI_UL bitfield bytes 29 03 00 -> pusch-tpc=(0x29>>3)&3=1 (0 dB),
+        # harq=2, and the 5-bit MCS integer at bits 12-16 per the vendor ASN.1:
+        # ((0x03&0x0f)<<1)|(0x00>>7) = 6
         payload = binascii.unhexlify('060003000000000100010000000000000001f7070013000000010800000001ff290300000a0001000000000800000000')
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
                                      log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_DCI_INFO), timestamp=0)
         result = self.parser.parse_nr_mac_dci_info(pkt_header, payload, dict())
         self.assertIn('num_records=1', result['stdout'])
-        self.assertIn('DCI UL rnti_type=0 PUSCH-TPC=1 (+0 dB) harq=2 rv=0 mcs=0 ndi=0', result['stdout'])
+        self.assertIn('DCI UL rnti_type=0 PUSCH-TPC=1 (+0 dB) harq=2 rv=0 mcs=6 ndi=0', result['stdout'])
         self.assertNotIn('cp', result)
 
     def test_parse_nr_l2_dl_data_pdu(self):

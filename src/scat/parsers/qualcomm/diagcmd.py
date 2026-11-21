@@ -534,14 +534,9 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
         diag_log_code_lte.LOG_LTE_RRC_SUPPORTED_CA_COMBOS,
     ]
 
-    items_nr = [
-        diag_log_code_5gnr.LOG_5GNR_RRC_MIB_INFO,
-        diag_log_code_5gnr.LOG_5GNR_RRC_SERVING_CELL_INFO,
-        diag_log_code_5gnr.LOG_5GNR_RRC_CONFIGURATION_INFO,
-        diag_log_code_5gnr.LOG_5GNR_RRC_SUPPORTED_CA_COMBOS,
-        diag_log_code_5gnr.LOG_5GNR_ML1_MEAS_DATABASE_UPDATE,
-        diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_STATE,
-    ]
+    # NR5G log codes share the LTE subsystem mask; the list is maintained in
+    # nr_log_items() so it stays identical to log_mask_scat_nr().
+    items_nr = nr_log_items(layers)
 
     if 'mac' in layers:
         items_lte += [
@@ -549,18 +544,6 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
             diag_log_code_lte.LOG_LTE_MAC_RACH_RESPONSE,
             diag_log_code_lte.LOG_LTE_MAC_DL_TRANSPORT_BLOCK,
             diag_log_code_lte.LOG_LTE_MAC_UL_TRANSPORT_BLOCK,
-        ]
-        items_nr += [
-            diag_log_code_5gnr.LOG_5GNR_L2_DL_DATA_PDU,
-            diag_log_code_5gnr.LOG_5GNR_L2_UL_DATA_PDU,
-            diag_log_code_5gnr.LOG_5GNR_L2_UL_TB,
-            diag_log_code_5gnr.LOG_5GNR_L2_UL_BSR,
-            diag_log_code_5gnr.LOG_5GNR_MAC_UL_TB_STATS,
-            diag_log_code_5gnr.LOG_5GNR_MAC_UL_PHYS_CHAN_SCHED,
-            diag_log_code_5gnr.LOG_5GNR_MAC_DCI_INFO,
-            diag_log_code_5gnr.LOG_5GNR_MAC_DL_TB_REPORT,
-            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_TRIGGER,
-            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT,
         ]
     if 'pdcp' in layers:
         items_lte += [
@@ -579,9 +562,6 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
         items_lte += [
             diag_log_code_lte.LOG_LTE_RRC_OTA_MESSAGE,
         ]
-        items_nr += [
-            diag_log_code_5gnr.LOG_5GNR_RRC_OTA_MESSAGE,
-        ]
     if 'nas' in layers:
         items_lte += [
             diag_log_code_lte.LOG_LTE_NAS_ESM_SEC_OTA_INCOMING_MESSAGE,
@@ -592,15 +572,6 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
             diag_log_code_lte.LOG_LTE_NAS_EMM_SEC_OTA_OUTGOING_MESSAGE,
             diag_log_code_lte.LOG_LTE_NAS_EMM_PLAIN_OTA_INCOMING_MESSAGE,
             diag_log_code_lte.LOG_LTE_NAS_EMM_PLAIN_OTA_OUTGOING_MESSAGE,
-        ]
-        items_nr += [
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GSM_PLAIN_OTA_INCOMING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GSM_PLAIN_OTA_OUTGOING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GSM_SEC_OTA_INCOMING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GSM_SEC_OTA_OUTGOING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_INCOMING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_OUTGOING_MESSAGE,
-            diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_CONTAINER_MESSAGE,
         ]
 
     if num_max_items < 0x0800:
@@ -615,7 +586,10 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
 def log_mask_empty_nr(num_max_items=0x09ff):
     return create_log_config_set_mask(DIAG_SUBSYS_ID_LTE, num_max_items)
 
-def log_mask_scat_nr(num_max_items=0x09ff, layers=[]):
+def nr_log_items(layers=[]):
+    # NR5G log codes, kept in one place so that the LTE-embedded mask used by
+    # prepare_diag (log_mask_scat_lte) and the standalone NR mask
+    # (log_mask_scat_nr) cannot drift apart.
     log_items = [
         diag_log_code_5gnr.LOG_5GNR_RRC_MIB_INFO,
         diag_log_code_5gnr.LOG_5GNR_RRC_SERVING_CELL_INFO,
@@ -652,8 +626,10 @@ def log_mask_scat_nr(num_max_items=0x09ff, layers=[]):
             diag_log_code_5gnr.LOG_5GNR_MAC_RACH_TRIGGER,
             diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT,
         ]
+    return log_items
 
-    return create_log_config_set_mask(DIAG_SUBSYS_ID_LTE, num_max_items, *log_items)
+def log_mask_scat_nr(num_max_items=0x09ff, layers=[]):
+    return create_log_config_set_mask(DIAG_SUBSYS_ID_LTE, num_max_items, *nr_log_items(layers))
 
 def log_mask_empty_tdscdma(num_max_items=0x0207):
     return create_log_config_set_mask(DIAG_SUBSYS_ID_TDSCDMA, num_max_items)

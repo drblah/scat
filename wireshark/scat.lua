@@ -62,6 +62,19 @@ local function check_and_get_dissector(name)
     return Dissector.get("data")
 end
 
+-- GSMTAPv3: hdr_len counts 'length (including metadata) in number of 32bit
+-- words', so the payload starts at 4*hdr_len. The TLV scan above is only used
+-- to dissect the metadata tree; it is not used to locate the payload.
+-- Captures whose metadata area is not padded up to 4*hdr_len are not
+-- supported -- regenerate them with a current scat (or the converter script).
+local function gsmtapv3_payload_start(tvbuffer, hdr_len, scan_pos)
+    local hdr_end = 4 * hdr_len
+    if hdr_end <= tvbuffer:len() then
+        return hdr_end
+    end
+    return scan_pos -- malformed/truncated header
+end
+
 -- Subtype description
 local lte_rrc_subtypes = {
     [ 0] = { check_and_get_dissector("lte_rrc.dl_ccch"), "DL CCCH" },
@@ -483,7 +496,7 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
 
         local child, version_value = t:add(F_gsmtapv3_version, tvbuffer(0, 1))
         local child, hdr_len_value = t:add(F_gsmtapv3_header_len, tvbuffer(2, 2))
-                                   :set_text(string.format("Maximum header length: %d bytes", hdr_len * 4))
+                                   :set_text(string.format("Header length: %d bytes", hdr_len * 4))
         local child, type_value = t:add(F_gsmtapv3_type, tvbuffer(4, 2))
                                    :set_text(string.format("Type: 0x%04x (%s)", type, itemtext))
 
@@ -506,7 +519,8 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
             -- Parses the Channel number metadata (if present) and sets pinfo.p2p_dir from
             -- its uplink bit -- needed below before PACCH/PTCCH can be told apart.
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse, pinfo, true)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse, pinfo, true))
 
             -- Direction-dependent channel handling, mirroring dissect_gsmtap_v2()'s
             -- switch on GSMTAP_CHANNEL_PACCH/PTCCH in packet-gsmtap.c. Requires
@@ -547,8 +561,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            gsmtapv3_gsm_abis_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if gsmtapv3_gsm_abis_subtypes[subtype] then
+                gsmtapv3_gsm_abis_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0303 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -558,9 +577,14 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
             -- UMTS RRC
-            gsmtapv3_umts_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            if gsmtapv3_umts_rrc_subtypes[subtype] then
+                gsmtapv3_umts_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0400 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -570,8 +594,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            lte_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if lte_mac_subtypes[subtype] then
+                lte_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0500 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -581,8 +610,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            nr_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if nr_mac_subtypes[subtype] then
+                nr_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0403 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -592,8 +626,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            gsmtapv3_lte_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if gsmtapv3_lte_rrc_subtypes[subtype] then
+                gsmtapv3_lte_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0404 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -603,8 +642,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            gsmtapv3_nas_eps_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if gsmtapv3_nas_eps_subtypes[subtype] then
+                gsmtapv3_nas_eps_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0503 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -614,8 +658,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            gsmtapv3_nr_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if gsmtapv3_nr_rrc_subtypes[subtype] then
+                gsmtapv3_nr_rrc_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         elseif type == 0x0504 then
             pinfo.cols.info = ""
             itemtext = "Unknown"
@@ -625,8 +674,13 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
                                     :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
-            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
-            gsmtapv3_nas_5gs_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            gsmtap_data_start_pos = gsmtapv3_payload_start(tvbuffer, hdr_len,
+                8 + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse))
+            if gsmtapv3_nas_5gs_subtypes[subtype] then
+                gsmtapv3_nas_5gs_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            else
+                check_and_get_dissector("data"):call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+            end
         else
             pinfo.cols.info = "GSMTAPv3"
         end

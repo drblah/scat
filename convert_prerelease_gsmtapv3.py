@@ -5,7 +5,6 @@
 import argparse
 import os
 import struct
-import math
 import binascii
 from enum import IntEnum, unique
 from scapy.all import rdpcap, wrpcap, IP, UDP, Raw, Ether
@@ -224,6 +223,23 @@ gsmtapv2_v3_nr_rrc_subtype_map =  {
     36: 0x0206, # UE Radio Paging Capability
 }
 
+def gsmtapv3_pad_header(tlv_bytes: bytes, payload_type: int, sub_type: int) -> bytes:
+    """Build a GSMTAPv3 header around the TLV bytes (including the trailing
+    END_OF_METADATA 0xfffe), padding the metadata area with zero bytes up to
+    the 32-bit word boundary announced by hdr_len: hdr_len counts 'length
+    (including metadata) in number of 32bit words' and readers locate the
+    payload at 4*hdr_len."""
+    header_len = 8 + len(tlv_bytes)
+    pad = (-header_len) % 4
+    gsmtap_hdr = struct.pack('!BBHHH',
+        3,                           # Version
+        0,                           # Reserved
+        (header_len + pad) // 4,     # Header Length (32-bit words, incl. metadata)
+        payload_type,                # Type
+        sub_type,                    # Subtype
+        )
+    return gsmtap_hdr + tlv_bytes + b'\x00' * pad
+
 def modify_gsmtapv3_header_140(payload: bytes):
     if payload[0] != 0x03:
         return payload
@@ -234,33 +250,30 @@ def modify_gsmtapv3_header_140(payload: bytes):
     # Version, Reserved, Header Length, Type, Subtype
     gsmtap_hdr = struct.unpack('!BBHHH', payload[0:8])
 
-    if len(payload) < gsmtap_hdr[2] * 4:
-        return payload
-
-    gsmtap_tlv_col = payload[8:gsmtap_hdr[2] * 4]
-    payload_body = payload[gsmtap_hdr[2] * 4:]
-
-    i = 0
-    while i < len(gsmtap_tlv_col):
+    # The header's TLV area ends at the END_OF_METADATA marker (0xfffe); the
+    # payload follows right after it. (hdr_len is not used to locate the
+    # payload: captures written before the metadata was padded to 4*hdr_len
+    # claim one word more than the header actually occupies.)
+    i = 8
+    payload_start = None
+    while i + 2 <= len(payload):
+        if payload[i] == 0xff and payload[i+1] == 0xfe:
+            payload_start = i + 2
+            break
         try:
-            g_t, g_l = struct.unpack('!HH', gsmtap_tlv_col[i:i+4])
-            i += 4
-            i += g_l
+            g_l = struct.unpack('!H', payload[i+2:i+4])[0]
         except:
             break
-    gsmtap_tlv_col = gsmtap_tlv_col[:i] + struct.pack('!H', 0xfffe)
+        i += 4 + g_l
 
-    header_len = 8 + len(gsmtap_tlv_col)
+    if payload_start is None:
+        # No END_OF_METADATA found: not a well-formed GSMTAPv3 packet, leave it alone
+        return payload
 
-    gsmtap_hdr_new = struct.pack('!BBHHH',
-        3,                           # Version
-        0,                           # Reserved
-        math.ceil(header_len/4),     # Header Length
-        gsmtap_hdr[3],               # Type
-        gsmtap_hdr[4],               # Subtype
-        )
+    gsmtap_tlv_col = payload[8:payload_start]
+    payload_body = payload[payload_start:]
 
-    return gsmtap_hdr_new + gsmtap_tlv_col + payload_body
+    return gsmtapv3_pad_header(gsmtap_tlv_col, gsmtap_hdr[3], gsmtap_hdr[4]) + payload_body
 
 def modify_gsmtapv3_header(payload: bytes):
     if not (payload[0] == 0x03 or (payload[0] == 0x02 and payload[2] in (0x20, 0x21))):
@@ -334,45 +347,27 @@ def modify_gsmtapv3_header(payload: bytes):
             print("Unknown NR RRC subtype {}".format(gsmtapv2_subtype))
             sub_type = 0x0000
 
-    header_len = 8
-
     t = gsmtapv3_metadata_tags
     if device_sec > 0:
         gsmtap_v3_metadata += struct.pack('!HHQL', t.PACKET_TIMESTAMP, 12, device_sec, device_usec * 1000)
-        header_len += 16
 
     if gsmtapv3_prerelease_header[2] in (0x01, 0x03, 0x08, 0x09):
         gsmtap_v3_metadata += struct.pack('!HHH', t.CHANNEL_NUMBER, 2, chan_number)
-        header_len += 6
     elif gsmtapv3_prerelease_header[2] in (0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x21):
         gsmtap_v3_metadata += struct.pack('!HHL', t.CHANNEL_NUMBER, 4, chan_number)
-        header_len += 8
 
     if pci > 0:
         gsmtap_v3_metadata += struct.pack('!HHH', t.BSIC_PSC_PCI, 2, pci)
-        header_len += 6
 
     if gsmtapv3_prerelease_header[7] > 0:
         gsmtap_v3_metadata += struct.pack('!HHL', t.SFN, 4, gsmtapv3_prerelease_header[7])
-        header_len += 8
 
     if gsmtapv3_prerelease_header[10] > 0:
         gsmtap_v3_metadata += struct.pack('!HHH', t.SUBFN, 2, gsmtapv3_prerelease_header[10])
-        header_len += 6
 
     gsmtap_v3_metadata += struct.pack('!H', t.END_OF_METADATA)
-    header_len += 2
 
-    gsmtap_hdr = struct.pack('!BBHHH',
-        3,                           # Version
-        0,                           # Reserved
-        math.ceil(header_len/4),     # Header Length
-        payload_type,                # Type
-        sub_type,                    # Subtype
-        )
-    gsmtap_hdr += gsmtap_v3_metadata
-
-    return gsmtap_hdr + payload_body
+    return gsmtapv3_pad_header(gsmtap_v3_metadata, payload_type, sub_type) + payload_body
 
 
 def process_pcap(input_file: str, output_file: str, is_140: bool):

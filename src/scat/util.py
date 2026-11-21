@@ -582,10 +582,19 @@ def create_gsmtap_header(version: int = 2, payload_type: int = 0, timeslot: int 
         gsmtap_v3_metadata += struct.pack('!H', t.END_OF_METADATA)
         header_len += 2
 
+        # hdr_len is 'length (including metadata) in number of 32bit words'
+        # (GSMTAPv3 draft, cf. openwrt/uqmi uqmid/gsmtapv3.h), so conformant
+        # readers expect the payload at 4*hdr_len. Pad the metadata area with
+        # zero bytes up to the 32-bit boundary announced by hdr_len.
+        pad = (-header_len) % 4
+        if pad:
+            gsmtap_v3_metadata += b'\x00' * pad
+            header_len += pad
+
         gsmtap_hdr = struct.pack(gsmtap_v3_hdr_def,
             3,                           # Version
             0,                           # Reserved
-            math.ceil(header_len/4),     # Header Length
+            header_len // 4,              # Header Length (32-bit words, incl. metadata)
             payload_type,                # Type
             sub_type,                    # Subtype
             )
