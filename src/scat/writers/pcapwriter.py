@@ -64,6 +64,9 @@ class PcapWriter(AbstractWriter):
                 )
 
         self.pcap_file.write(pcap_hdr + self.eth_hdr + ip_hdr + udp_hdr + sock_content)
+        # Flush as we go: a capture that ends without a clean exit (SIGTERM,
+        # crash) must not lose every packet written so far.
+        self.pcap_file.flush()
         self.ip_id += 1
         if self.ip_id > 65535:
             self.ip_id = 0

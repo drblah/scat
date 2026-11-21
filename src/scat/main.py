@@ -62,7 +62,7 @@ def scat_main():
     parser.add_argument('-t', '--type', help='Baseband type to be parsed.\nAvailable types: {}'.format(', '.join(parser_dict.keys())), required=True, choices=list(parser_dict.keys()))
     parser.add_argument('-l', '--list-devices', help='List USB devices and exit', nargs=0, action='listusb')
     parser.add_argument('-V', '--version', action='version', version='SCAT {}'.format(__version__))
-    parser.add_argument('-L', '--layer', help='Specify the layers to see as GSMTAP packets (comma separated).\nAvailable layers: {}, Default: "ip,nas,rrc"'.format(', '.join(valid_layers)), type=str, default='ip,nas,rrc')
+    parser.add_argument('-L', '--layer', help='Specify the layers to see as GSMTAP packets.\nCan be given multiple times and/or as a comma separated list (e.g. -L mac -L rrc or -L mac,rrc).\nAvailable layers: {}, Default: "ip,nas,rrc"'.format(', '.join(valid_layers)), type=str, action='append', default=None)
     parser.add_argument('-f', '--format', help='Select display format for LAC/RAC/TAC/CID: [d]ecimal, he[x]adecimal (default), [b]oth.', type=str, default='x', choices=['d', 'x', 'b'])
     parser.add_argument('-3', '--gsmtapv3', help='Enable GSMTAPv3 for 2G/3G/4G. Default: enabled only for 5G NR', action='store_true')
 
@@ -134,7 +134,12 @@ def scat_main():
         print('Error: invalid baseband type {} specified. Available modules: {}'.format(args.type, ', '.join(parser_dict.keys())))
         sys.exit(1)
 
-    layers = args.layer.split(',')
+    # Accept both '-L mac -L rrc' and '-L mac,rrc'
+    if args.layer is None:
+        layers = 'ip,nas,rrc'
+    else:
+        layers = ','.join(args.layer)
+    layers = layers.split(',')
     for l in layers:
         if not l in valid_layers:
             print('Error: invalid layer {} specified. Available layers: {}'.format(l, ', '.join(valid_layers)))
