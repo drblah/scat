@@ -276,8 +276,23 @@ class diag_log_code_5gnr(IntEnum):
     # Management Layer 1
     LOG_5GNR_ML1_MEAS_DATABASE_UPDATE  = 0x97F # 0xB97F NR ML1 Measurement Database Update
 
+    # L2 (MAC/RLC transport blocks and PDUs)
+    LOG_5GNR_L2_DL_DATA_PDU            = 0x857 # 0xB857 NR5G L2 DL DATA PDU (DL MAC TB contents)
+    LOG_5GNR_L2_UL_DATA_PDU            = 0x870 # 0xB870 NR5G L2 UL Data PDU (UL MAC TB contents)
+    LOG_5GNR_L2_UL_TB                  = 0x872 # 0xB872 NR5G L2 UL TB
+    LOG_5GNR_L2_UL_BSR                 = 0x873 # 0xB873 NR5G L2 UL BSR
+
     # MAC
+    LOG_5GNR_MAC_UL_TB_STATS           = 0x881 # 0xB881 NR5G MAC UL TB Stats
+    LOG_5GNR_MAC_UL_PHYS_CHAN_SCHED    = 0x883 # 0xB883 NR5G MAC UL Physical Channel Schedule Report
+    LOG_5GNR_MAC_DCI_INFO              = 0x885 # 0xB885 NR5G MAC DCI Info
+    LOG_5GNR_MAC_DL_TB_REPORT          = 0x886 # 0xB886 NR5G MAC DL TB Report
+    LOG_5GNR_MAC_PDSCH_STATUS          = 0x887 # 0xB887 NR5G MAC PDSCH Status
+    LOG_5GNR_MAC_PDSCH_STATS           = 0x888 # 0xB888 NR5G MAC PDSCH Stats
+    LOG_5GNR_MAC_RACH_TRIGGER          = 0x889 # 0xB889 NR5G MAC RACH Trigger
     LOG_5GNR_MAC_RACH_ATTEMPT          = 0x88A # 0xB88A NR MAC RACH Attempt
+    LOG_5GNR_MAC_CDRX_EVENTS           = 0x890 # 0xB890 NR5G MAC CDRX Events Info
+    LOG_5GNR_MAC_UCI_INFO              = 0x89B # 0xB89B NR5G MAC UCI Information
 
     # RRC
     LOG_5GNR_RRC_OTA_MESSAGE           = 0x821 # 0xB821 NR RRC OTA
@@ -535,6 +550,16 @@ def log_mask_scat_lte(num_max_items=0x09ff, layers=[]):
             diag_log_code_lte.LOG_LTE_MAC_DL_TRANSPORT_BLOCK,
             diag_log_code_lte.LOG_LTE_MAC_UL_TRANSPORT_BLOCK,
         ]
+        items_nr += [
+            diag_log_code_5gnr.LOG_5GNR_L2_DL_DATA_PDU,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_DATA_PDU,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_TB,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_BSR,
+            diag_log_code_5gnr.LOG_5GNR_MAC_DCI_INFO,
+            diag_log_code_5gnr.LOG_5GNR_MAC_DL_TB_REPORT,
+            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_TRIGGER,
+            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT,
+        ]
     if 'pdcp' in layers:
         items_lte += [
             diag_log_code_lte.LOG_LTE_PDCP_DL_CONFIG,
@@ -611,6 +636,17 @@ def log_mask_scat_nr(num_max_items=0x09ff, layers=[]):
             diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_INCOMING_MESSAGE,
             diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_OUTGOING_MESSAGE,
             diag_log_code_5gnr.LOG_5GNR_NAS_5GMM_PLAIN_OTA_CONTAINER_MESSAGE,
+        ]
+    if 'mac' in layers:
+        log_items += [
+            diag_log_code_5gnr.LOG_5GNR_L2_DL_DATA_PDU,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_DATA_PDU,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_TB,
+            diag_log_code_5gnr.LOG_5GNR_L2_UL_BSR,
+            diag_log_code_5gnr.LOG_5GNR_MAC_DCI_INFO,
+            diag_log_code_5gnr.LOG_5GNR_MAC_DL_TB_REPORT,
+            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_TRIGGER,
+            diag_log_code_5gnr.LOG_5GNR_MAC_RACH_ATTEMPT,
         ]
 
     return create_log_config_set_mask(DIAG_SUBSYS_ID_LTE, num_max_items, *log_items)

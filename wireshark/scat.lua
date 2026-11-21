@@ -98,6 +98,10 @@ local lte_mac_subtypes = {
     [ 0] = { check_and_get_dissector("mac-lte-framed"), "LTE MAC" },
 }
 
+local nr_mac_subtypes = {
+    [ 0] = { check_and_get_dissector("mac-nr-framed"), "NR MAC" },
+}
+
 local original_gsmtap_dissector
 
 local gsmtapv3_types = {
@@ -568,6 +572,17 @@ function gsmtap_wrapper_proto.dissector(tvbuffer, pinfo, treeitem)
             local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
             gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
             lte_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
+        elseif type == 0x0500 then
+            pinfo.cols.info = ""
+            itemtext = "Unknown"
+            if nr_mac_subtypes[subtype] then
+                itemtext = nr_mac_subtypes[subtype][2]
+            end
+            local child, subtype_value = t:add(F_gsmtapv3_subtype, tvbuffer(6, 2))
+                                    :set_text(string.format("Subtype: 0x%04x (%s)", subtype, itemtext))
+            local bytes_to_parse = math.min(tvbuffer:len() - 8, 4 * hdr_len - 8)
+            gsmtap_data_start_pos = gsmtap_data_start_pos + gsmtapv3_parse_metadata(t, tvbuffer(8, bytes_to_parse), bytes_to_parse)
+            nr_mac_subtypes[subtype][1]:call(tvbuffer:range(gsmtap_data_start_pos):tvb(), pinfo, treeitem)
         elseif type == 0x0403 then
             pinfo.cols.info = ""
             itemtext = "Unknown"

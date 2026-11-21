@@ -5,6 +5,7 @@ from collections import namedtuple
 from enum import IntEnum, unique
 from packaging import version
 import bitstring
+import calendar
 import datetime
 import math
 import string
@@ -666,6 +667,71 @@ class mac_lte_tags(IntEnum):
     MAC_LTE_NB_MODE_TAG = 0x0F # 1 byte containing mac_lte_nb_mode enum value
     MAC_LTE_N_UL_RB_TAG = 0x10 # 1 byte containing the number of UL resource blocks: 6, 15, 25, 50, 75 or 100
     MAC_LTE_SR_TAG = 0x11 # 2 bytes for the number of items, followed by that number of ueid, rnti (2 bytes each)
+
+@unique
+class mac_nr_radio_types(IntEnum):
+    FDD_RADIO = 1
+    TDD_RADIO = 2
+
+@unique
+class mac_nr_direction_types(IntEnum):
+    DIRECTION_UPLINK = 0
+    DIRECTION_DOWNLINK = 1
+
+@unique
+class mac_nr_rnti_types(IntEnum):
+    NO_RNTI = 0
+    P_RNTI = 1
+    RA_RNTI = 2
+    C_RNTI = 3
+    SI_RNTI = 4
+    CS_RNTI = 5
+    MSGB_RNTI = 6
+
+@unique
+class mac_nr_tags(IntEnum):
+    MAC_NR_PAYLOAD_TAG = 0x01             # followed by the MAC PDU, to end of frame
+    MAC_NR_RNTI_TAG = 0x02                # 2 bytes, network order
+    MAC_NR_UEID_TAG = 0x03                # 2 bytes, network order
+    MAC_NR_FRAME_SUBFRAME_TAG = 0x04      # 2 bytes, network order (deprecated)
+    MAC_NR_PHR_TYPE2_OTHERCELL_TAG = 0x05 # 1 byte, true/false
+    MAC_NR_HARQID_TAG = 0x06              # 1 byte
+    MAC_NR_FRAME_SLOT_TAG = 0x07          # 4 bytes, network order: SFN (2B) + slot (2B)
+
+def create_nr_mac_gsmtap_packet(pkt_ts: datetime.datetime, is_downlink: bool,
+        rnti_type: 'mac_nr_rnti_types', body: bytes, rnti: int = 0, ueid: int = 0,
+        sfn: int | None = None, slot: int | None = None, harq_id: int | None = None,
+        arfcn: int = 0, radio_type: 'mac_nr_radio_types | None' = None) -> bytes:
+    """Builds a GSMTAPv3 NR_MAC (0x0500) packet carrying a mac-nr-framed MAC PDU,
+    as expected by Wireshark's mac-nr-framed dissector (packet-mac-nr.h)."""
+    ts_sec = calendar.timegm(pkt_ts.timetuple())
+    ts_usec = pkt_ts.microsecond
+
+    if radio_type is None:
+        radio_type = mac_nr_radio_types.FDD_RADIO
+
+    # mac-nr-framed context header: radioType, direction, rntiType, then tags
+    mac_hdr = struct.pack('!BBB',
+        int(radio_type),
+        mac_nr_direction_types.DIRECTION_DOWNLINK if is_downlink else mac_nr_direction_types.DIRECTION_UPLINK,
+        int(rnti_type))
+    if int(rnti_type) != int(mac_nr_rnti_types.NO_RNTI):
+        mac_hdr += struct.pack('!BH', mac_nr_tags.MAC_NR_RNTI_TAG, rnti & 0xffff)
+    mac_hdr += struct.pack('!BH', mac_nr_tags.MAC_NR_UEID_TAG, ueid & 0xffff)
+    if harq_id is not None:
+        mac_hdr += struct.pack('!BB', mac_nr_tags.MAC_NR_HARQID_TAG, harq_id & 0xff)
+    if sfn is not None and slot is not None:
+        mac_hdr += struct.pack('!BHH', mac_nr_tags.MAC_NR_FRAME_SLOT_TAG, sfn & 0x3ff, slot & 0xffff)
+    mac_hdr += struct.pack('!B', mac_nr_tags.MAC_NR_PAYLOAD_TAG)
+
+    gsmtap_hdr = create_gsmtap_header(
+        version = 3,
+        payload_type = gsmtapv3_types.NR_MAC,
+        arfcn = arfcn,
+        device_sec = ts_sec,
+        device_usec = ts_usec)
+
+    return gsmtap_hdr + mac_hdr + body
 
 @unique
 class pdcp_lte_direction_types(IntEnum):
