@@ -51,6 +51,8 @@ class DiagNrLogParser:
             i(c.LOG_5GNR_L2_UL_DATA_PDU): lambda x, y, z: self.parse_nr_l2_ul_data_pdu(x, y, z),
             i(c.LOG_5GNR_L2_UL_TB): lambda x, y, z: self.parse_nr_l2_ul_tb(x, y, z),
             i(c.LOG_5GNR_L2_UL_BSR): lambda x, y, z: self.parse_nr_l2_ul_bsr(x, y, z),
+            i(c.LOG_5GNR_MAC_UL_TB_STATS): lambda x, y, z: self.parse_nr_mac_ul_tb_stats(x, y, z),
+            i(c.LOG_5GNR_MAC_UL_PHYS_CHAN_SCHED): lambda x, y, z: self.parse_nr_mac_ul_phys_chan_sched(x, y, z),
             i(c.LOG_5GNR_MAC_DCI_INFO): lambda x, y, z: self.parse_nr_mac_dci_info(x, y, z),
             i(c.LOG_5GNR_MAC_DL_TB_REPORT): lambda x, y, z: self.parse_nr_mac_dl_tb_report(x, y, z),
             i(c.LOG_5GNR_MAC_RACH_TRIGGER): lambda x, y, z: self.parse_nr_mac_rach_trigger(x, y, z),
@@ -479,12 +481,103 @@ class DiagNrLogParser:
         stdout = 'NR L2 UL BSR: {}'.format(util.xxd_oneline(pkt_body))
         return {'stdout': stdout, 'ts': pkt_ts}
 
-    def parse_nr_mac_dci_info(self, pkt_header, pkt_body: bytes, args: dict):
+    def parse_nr_mac_ul_tb_stats(self, pkt_header, pkt_body: bytes, args: dict):
+        # 0xB881 NR5G MAC UL TB Stats, v0x00030001 (SDXLEMUR): S_H 12 bytes
+        # (version u32, skip 3, num-records u8 @7, skip 4), then 80-byte records
+        # of u32 fields (cf. CellNinjia NR5G_MAC_UL_TB_Stats.asn1, v196609).
+        # Field offsets calibrated on live captures; phr @44 is in milli-dB
+        # (correlates with the S-PHR CE raw index in 0xB872), max-power @52
+        # is Pcmax in dBm (23 seen on this network).
         pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
-        if len(pkt_body) < 4:
+        if len(pkt_body) < 12:
             return None
         pkt_ver = struct.unpack('<I', pkt_body[0:4])[0]
-        stdout = 'NR MAC DCI Info v0x{:08x}: {}'.format(pkt_ver, util.xxd_oneline(pkt_body))
+        num_records = pkt_body[7]
+        stdout = 'NR MAC UL TB Stats v0x{:08x}: num_records={}'.format(pkt_ver, num_records)
+        if self.parent:
+            self.parent.logger.log(logging.DEBUG, 'NR MAC UL TB Stats raw: {}'.format(util.xxd_oneline(pkt_body)))
+        off = 12
+        for r in range(min(num_records, 16)):
+            if off + 80 > len(pkt_body):
+                break
+            f = lambda o: struct.unpack('<I', pkt_body[off+o:off+o+4])[0]
+            phr_raw = struct.unpack('<i', pkt_body[off+32:off+36])[0]
+            pcmax = struct.unpack('<H', pkt_body[off+76:off+78])[0]
+            stdout += ('\n  rec{}: tb_new_tx={} tb_retx={} num_mcs={} num_prb={} '
+                       'PHR={:.3f} dB (raw {}) max_power(Pcmax)={} dBm '
+                       'num_new_tx={} num_retx={} ri={} cqi={} num_phr={} '
+                       'ul_sched={} no_sched={} pcmax_raw={}').format(
+                r, f(0), f(8), f(16), f(24), phr_raw / 1000.0, phr_raw, f(40),
+                f(44), f(48), f(52), f(56), f(60), f(64), f(68), f(72), pcmax)
+            off += 80
+        return {'stdout': stdout, 'ts': pkt_ts}
+
+    # TPC command field -> dB (TS 38.213 Table 7.1.1.1-1 / 7.2.1.1-1)
+    nr_tpc_db = {0: -1, 1: 0, 2: 1, 3: 3}
+
+    def parse_nr_mac_dci_info(self, pkt_header, pkt_body: bytes, args: dict):
+        # 0xB885 NR5G MAC DCI Info, v0x00030006 (SDXLEMUR): S_H 8 bytes
+        # (version u32, skip 3, num-records u8 @7); then per record an 8-byte
+        # R_H (slot u8 @0), then DCI entries: 4-byte DCI_H (dci-format =
+        # (b0&1)<<1 | (b1&0x80)>>7; <2 = UL, >=2 = DL; rnti-type = (b1>>2)&0xf)
+        # followed by a 24-byte DCI_UL (raw DCI payload 12B, then bit-packed
+        # fields per CellNinjia NR5G_MAC_DCI_Info.asn1) or 8-byte DCI_DL.
+        # pusch-tpc = (DCI_UL[12] >> 3) & 3  -> closed-loop PUSCH power control.
+        pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
+        if len(pkt_body) < 8:
+            return None
+        pkt_ver = struct.unpack('<I', pkt_body[0:4])[0]
+        num_records = pkt_body[7]
+        stdout = 'NR MAC DCI Info v0x{:08x}: num_records={}'.format(pkt_ver, num_records)
+        if self.parent:
+            self.parent.logger.log(logging.DEBUG, 'NR MAC DCI Info raw: {}'.format(util.xxd_oneline(pkt_body)))
+        off = 8
+        for r in range(min(num_records, 16)):
+            if off + 8 > len(pkt_body):
+                break
+            slot = pkt_body[off]
+            off += 8  # R_H
+            stdout += '\n  rec{} slot={}'.format(r, slot)
+            ndci = 0
+            while off + 4 <= len(pkt_body) and ndci < 32:
+                fmt = ((pkt_body[off] & 0x01) << 1) | ((pkt_body[off+1] & 0x80) >> 7)
+                rnti_type = (pkt_body[off+1] >> 2) & 0x0f
+                body_off = off + 4
+                if fmt < 2:  # UL grant (DCI format 0_0 / 0_1)
+                    if body_off + 24 > len(pkt_body):
+                        break
+                    b12, b13, b14 = pkt_body[body_off+12], pkt_body[body_off+13], pkt_body[body_off+14]
+                    tpc = (b12 >> 3) & 0x03
+                    harq = ((b12 & 0x01) << 1) | (b13 >> 7)
+                    rv = (b13 >> 5) & 0x03
+                    mcs = (((b13 >> 4) & 0x0f) << 1) | ((b14 >> 7) & 0x01)
+                    ndi = (b14 >> 6) & 0x01
+                    rb = struct.unpack('>H', pkt_body[body_off+16:body_off+18])[0]
+                    stdout += ('\n    DCI UL rnti_type={} PUSCH-TPC={} ({:+d} dB) harq={} rv={} '
+                               'mcs={} ndi={} rb_raw=0x{:04x} raw_dci={}').format(
+                        rnti_type, tpc, self.nr_tpc_db.get(tpc, 0), harq, rv, mcs, ndi, rb,
+                        pkt_body[body_off:body_off+12].hex())
+                    off = body_off + 24
+                else:  # DL assignment (DCI format 1_0 / 1_1)
+                    if body_off + 8 > len(pkt_body):
+                        break
+                    tpc_pucch = pkt_body[body_off+2] & 0x03
+                    stdout += ('\n    DCI DL rnti_type={} PUCCH-TPC={} ({:+d} dB) raw={}').format(
+                        rnti_type, tpc_pucch, self.nr_tpc_db.get(tpc_pucch, 0),
+                        pkt_body[body_off:body_off+8].hex())
+                    off = body_off + 8
+                ndci += 1
+        return {'stdout': stdout, 'ts': pkt_ts}
+
+    def parse_nr_mac_ul_phys_chan_sched(self, pkt_header, pkt_body: bytes, args: dict):
+        # 0xB883 NR5G MAC UL Physical Channel Schedule Report: per-grant PUSCH
+        # scheduling (rb-start/num-rb/mcs/tb-size). Layout is UPER bit-packed per
+        # CellNinjia NR5G_MAC_UL_Physical_Channel_Schedule_Report_v196623.asn1;
+        # only the version header is decoded here, raw bytes at DEBUG level.
+        pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
+        if self.parent:
+            self.parent.logger.log(logging.DEBUG, 'NR MAC UL Phys Chan Sched raw: {}'.format(util.xxd_oneline(pkt_body)))
+        stdout = 'NR MAC UL Phys Chan Sched v0x{:08x}: {}'.format(struct.unpack('<I', pkt_body[0:4])[0] if len(pkt_body) >= 4 else 0, util.xxd_oneline(pkt_body))
         return {'stdout': stdout, 'ts': pkt_ts}
 
     def parse_nr_mac_dl_tb_report(self, pkt_header, pkt_body: bytes, args: dict):

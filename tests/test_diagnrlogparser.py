@@ -398,6 +398,30 @@ Layer 0: NR-ARFCN: 431070, SCell PCI: 65535/SSB: 15, RSRP: 0.00/0.00/0.00/0.00, 
         self.assertNotIn('S-PHR', result['stdout'])
         self.assertNotIn('cp', result)
 
+    def test_parse_nr_mac_ul_tb_stats(self):
+        # 0xB881 v0x00030001, one 80-byte record (live capture, SDXLEMUR):
+        # phr @44 = 0x54df = 21727 (milli-dB -> 21.727 dB), max-power @52 = 23 dBm
+        payload = binascii.unhexlify('01000300000000010000000067260a00000000000000000000000000752e0000000000003548000000000000df5400000000000017000000a7030000000000009d2d0000b45d020089010000feffffffa70300000000000004010000')
+        pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
+                                     log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_UL_TB_STATS), timestamp=0)
+        result = self.parser.parse_nr_mac_ul_tb_stats(pkt_header, payload, dict())
+        self.assertIn('num_records=1', result['stdout'])
+        self.assertIn('PHR=21.727 dB (raw 21727)', result['stdout'])
+        self.assertIn('max_power(Pcmax)=23 dBm', result['stdout'])
+        self.assertIn('num_prb=18485', result['stdout'])
+        self.assertNotIn('cp', result)  # stats are stdout-only, no pcap emission
+
+    def test_parse_nr_mac_dci_info_ul_tpc(self):
+        # 0xB885 v0x00030006, one record, one UL DCI (live capture):
+        # DCI_UL bitfield bytes 29 03 00 -> pusch-tpc=(0x29>>3)&3=1 (0 dB), harq=2, mcs=0
+        payload = binascii.unhexlify('060003000000000100010000000000000001f7070013000000010800000001ff290300000a0001000000000800000000')
+        pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
+                                     log_id=diagcmd.diag_log_get_lte_item_id(diagcmd.diag_log_code_5gnr.LOG_5GNR_MAC_DCI_INFO), timestamp=0)
+        result = self.parser.parse_nr_mac_dci_info(pkt_header, payload, dict())
+        self.assertIn('num_records=1', result['stdout'])
+        self.assertIn('DCI UL rnti_type=0 PUSCH-TPC=1 (+0 dB) harq=2 rv=0 mcs=0 ndi=0', result['stdout'])
+        self.assertNotIn('cp', result)
+
     def test_parse_nr_l2_dl_data_pdu(self):
         payload = binascii.unhexlify('0700000002000000000001000001a51001010000000000000001000000000000000100000001000000c10400000000eb010100000001000000010300010000000000000000210600000800eb010100000001000000010bc0000000'.replace(' ', ''))
         pkt_header = self.log_header(cmd_code=0x10, reserved=0, length1=len(payload) + 12, length2=len(payload) + 12,
