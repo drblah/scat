@@ -93,6 +93,7 @@ def scat_main():
         qc_group.add_argument('--msgs', action='store_true', help='Decode Extended Message Reports and QSR Message Reports as GSMTAP logging')
         qc_group.add_argument('--cacombos', action='store_true', help='Display raw values of UE CA combo information on 4G/5G (0xB0CD/0xB826)')
         qc_group.add_argument('--disable-crc-check', action='store_true', help='Disable CRC mismatch checks. Improves performance by avoiding CRC calculations.')
+        qc_group.add_argument('--host-timestamps', action='store_true', help='Timestamp packets with the host clock instead of the modem DIAG clock, so pcaps align with host-side logs.')
 
     if 'sec' in parser_dict.keys():
         sec_group = parser.add_argument_group('Samsung specific settings')
@@ -212,6 +213,7 @@ def scat_main():
             'cacombos': args.cacombos,
             'combine-stdout': args.combine_stdout,
             'disable-crc-check': args.disable_crc_check,
+            'host-timestamps': args.host_timestamps,
             'layer': layers,
             'format': args.format,
             'gsmtapv3': args.gsmtapv3})

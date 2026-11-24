@@ -70,6 +70,9 @@ class QualcommParser(AbstractParser):
         self.io_device: AbstractIO
         self.writer: list[AbstractWriter]
         self.parse_msgs = False
+        # If set: timestamp pcap records with the HOST clock instead of the
+        # modem's DIAG clock, so pcaps line up with host-side logs.
+        self.host_timestamps = False
         self.parse_events = False
         self.qsr_hash_filename = ''
         self.qsr4_hash_filename = ''
@@ -288,6 +291,8 @@ class QualcommParser(AbstractParser):
                 self.parse_msgs = params[p]
             elif p == 'cacombos':
                 self.cacombos = params[p]
+            elif p == 'host-timestamps':
+                self.host_timestamps = params[p]
             elif p == 'combine-stdout':
                 self.combine_stdout = params[p]
             elif p == 'disable-crc-check':
@@ -651,9 +656,10 @@ class QualcommParser(AbstractParser):
         else:
             radio_id = 0
 
-        if 'ts' in parse_result:
+        if 'ts' in parse_result and not self.host_timestamps:
             ts = parse_result['ts']
         else:
+            # Host clock ('--host-timestamps', or packet without ts).
             ts = datetime.datetime.now()
 
         if 'cp' in parse_result:
